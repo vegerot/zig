@@ -590,7 +590,6 @@ pub fn flushModule(self: *ZigObject, macho_file: *MachO, tid: Zcu.PerThread.Id) 
         defer pt.deactivate();
         dwarf.flushModule(pt) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.CodegenFail => return error.LinkFailure,
             else => |e| return diags.fail("failed to flush dwarf module: {s}", .{@errorName(e)}),
         };
 
@@ -796,7 +795,7 @@ pub fn updateFunc(
     var dwarf_wip_nav = if (self.dwarf) |*dwarf| try dwarf.initWipNav(pt, func.owner_nav, sym_index) else null;
     defer if (dwarf_wip_nav) |*wip_nav| wip_nav.deinit();
 
-    const res = try codegen.generateFunction(
+    try codegen.generateFunction(
         &macho_file.base,
         pt,
         zcu.navSrcLoc(func.owner_nav),
@@ -806,14 +805,7 @@ pub fn updateFunc(
         &code_buffer,
         if (dwarf_wip_nav) |*wip_nav| .{ .dwarf = wip_nav } else .none,
     );
-
-    const code = switch (res) {
-        .ok => code_buffer.items,
-        .fail => |em| {
-            try zcu.failed_codegen.put(gpa, func.owner_nav, em);
-            return error.CodegenFail;
-        },
-    };
+    const code = code_buffer.items;
 
     const sect_index = try self.getNavOutputSection(macho_file, zcu, func.owner_nav, code);
     const old_rva, const old_alignment = blk: {
@@ -919,7 +911,7 @@ pub fn updateNav(
         var debug_wip_nav = if (self.dwarf) |*dwarf| try dwarf.initWipNav(pt, nav_index, sym_index) else null;
         defer if (debug_wip_nav) |*wip_nav| wip_nav.deinit();
 
-        const res = try codegen.generateSymbol(
+        try codegen.generateSymbol(
             &macho_file.base,
             pt,
             zcu.navSrcLoc(nav_index),
@@ -927,14 +919,8 @@ pub fn updateNav(
             &code_buffer,
             .{ .atom_index = sym_index },
         );
+        const code = code_buffer.items;
 
-        const code = switch (res) {
-            .ok => code_buffer.items,
-            .fail => |em| {
-                try zcu.failed_codegen.put(zcu.gpa, nav_index, em);
-                return;
-            },
-        };
         const sect_index = try self.getNavOutputSection(macho_file, zcu, nav_index, code);
         if (isThreadlocal(macho_file, nav_index))
             try self.updateTlv(macho_file, pt, nav_index, sym_index, sect_index, code)
@@ -1238,7 +1224,7 @@ fn lowerConst(
     const name_str = try self.addString(gpa, name);
     const sym_index = try self.newSymbolWithAtom(gpa, name_str, macho_file);
 
-    const res = try codegen.generateSymbol(
+    try codegen.generateSymbol(
         &macho_file.base,
         pt,
         src_loc,
@@ -1246,10 +1232,7 @@ fn lowerConst(
         &code_buffer,
         .{ .atom_index = sym_index },
     );
-    const code = switch (res) {
-        .ok => code_buffer.items,
-        .fail => |em| return .{ .fail = em },
-    };
+    const code = code_buffer.items;
 
     const sym = &self.symbols.items[sym_index];
     sym.out_n_sect = output_section_index;
@@ -1384,7 +1367,6 @@ fn updateLazySymbol(
 ) !void {
     const zcu = pt.zcu;
     const gpa = zcu.gpa;
-    const diags = &macho_file.base.comp.link_diags;
 
     var required_alignment: Atom.Alignment = .none;
     var code_buffer = std.ArrayList(u8).init(gpa);
@@ -1400,7 +1382,7 @@ fn updateLazySymbol(
     };
 
     const src = Type.fromInterned(lazy_sym.ty).srcLocOrNull(zcu) orelse Zcu.LazySrcLoc.unneeded;
-    const res = codegen.generateLazySymbol(
+    try codegen.generateLazySymbol(
         &macho_file.base,
         pt,
         src,
@@ -1409,15 +1391,8 @@ fn updateLazySymbol(
         &code_buffer,
         .none,
         .{ .atom_index = symbol_index },
-    ) catch |err| switch (err) {
-        error.CodegenFail => return error.LinkFailure,
-        error.OutOfMemory => return error.OutOfMemory,
-        else => |e| return diags.fail("failed to codegen symbol: {s}", .{@errorName(e)}),
-    };
-    const code = switch (res) {
-        .ok => code_buffer.items,
-        .fail => |em| return diags.fail("codegen failure: {s}", .{em.msg}),
-    };
+    );
+    const code = code_buffer.items;
 
     const output_section_index = switch (lazy_sym.kind) {
         .code => macho_file.zig_text_sect_index.?,
