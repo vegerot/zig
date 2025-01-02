@@ -76,7 +76,7 @@ pub const Os = struct {
 
         pub inline fn isWindows(tag: Tag) bool {
             return switch(tag) {
-                .window => true,
+                .windows => true,
                 else => false,
             };
         }
